@@ -1,6 +1,7 @@
 const LEADERBOARD_EMBED_URL = '';
 const SOCIAL_URL = '';
 const PLAYER_KEY = 'teenstockPlayer';
+const MAX_TRADES = 5;
 
 const samplePlayers = [
   { rank: 1, name: 'Alex', value: '$12,500', change: '+5.0%', picks: 'AAPL, MSFT' },
@@ -103,8 +104,31 @@ function Portfolio({ player, setPlayer }) {
   const [shares, setShares] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
+  const [quotes, setQuotes] = React.useState({});
+
+  React.useEffect(() => {
+    if (player.holdings.length === 0) return;
+    const symbols = player.holdings.map(h => h.ticker).join(',');
+    fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`)
+      .then(res => res.json())
+      .then(data => {
+        const q = {};
+        data.quoteResponse.result.forEach(r => q[r.symbol] = r.regularMarketPrice);
+        setQuotes(q);
+      });
+  }, [player.holdings]);
+
+  const resetTrades = () => {
+    const newPlayer = { ...player, trades: 0 };
+    setPlayer(newPlayer);
+    localStorage.setItem(PLAYER_KEY, JSON.stringify(newPlayer));
+  };
 
   const buy = async () => {
+    if (player.trades >= MAX_TRADES) {
+      setError('No trades left this week');
+      return;
+    }
     const qty = parseInt(shares, 10);
     if (!ticker || !qty) return;
     setLoading(true);
@@ -128,11 +152,12 @@ function Portfolio({ player, setPlayer }) {
         } else {
           holdings.push({ ticker: ticker.toUpperCase(), shares: qty, price });
         }
-        const newPlayer = { ...player, cash: player.cash - cost, holdings };
+        const newPlayer = { ...player, cash: player.cash - cost, holdings, trades: player.trades + 1 };
         setPlayer(newPlayer);
         localStorage.setItem(PLAYER_KEY, JSON.stringify(newPlayer));
         setTicker('');
         setShares('');
+        if (window.confetti) window.confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
       }
     } catch (e) {
       setError('Failed to fetch price');
@@ -141,11 +166,42 @@ function Portfolio({ player, setPlayer }) {
     }
   };
 
+  const sell = ticker => {
+    if (player.trades >= MAX_TRADES) {
+      setError('No trades left this week');
+      return;
+    }
+    const h = player.holdings.find(h => h.ticker === ticker);
+    if (!h) return;
+    const price = quotes[ticker] || h.price;
+    const holdings = player.holdings.filter(h => h.ticker !== ticker);
+    const newPlayer = {
+      ...player,
+      cash: player.cash + price * h.shares,
+      holdings,
+      trades: player.trades + 1,
+    };
+    setPlayer(newPlayer);
+    localStorage.setItem(PLAYER_KEY, JSON.stringify(newPlayer));
+    if (window.confetti) window.confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
+  };
+
+  const totalValue = player.cash + player.holdings.reduce((sum, h) => {
+    const p = quotes[h.ticker] || h.price;
+    return sum + p * h.shares;
+  }, 0);
+  const gain = totalValue - 10000;
+
   return (
     <section id="portfolio" className="py-20 px-4 max-w-3xl mx-auto">
       <h2 className="text-3xl font-bold text-center mb-8">Your Portfolio</h2>
-      <div className="bg-gray-800 p-4 rounded-lg mb-6">
+      <div className="bg-gray-800 p-4 rounded-lg mb-6 space-y-2">
         <div className="text-emerald-400 text-xl font-bold">Cash: ${'{'}player.cash.toFixed(2){'}'}</div>
+        <div className={`${'{'}gain >= 0 ? 'text-emerald-400' : 'text-red-400'{'}'} text-lg font-bold`}>
+          Portfolio Value: ${'{'}totalValue.toFixed(2){'}'} ({'{'}gain >= 0 ? '+' : ''{'}'}${'{'}gain.toFixed(2){'}'})
+        </div>
+        <div className="text-sm text-gray-300">Trades left this week: {MAX_TRADES - player.trades}</div>
+        <button onClick={resetTrades} className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Reset Week</button>
       </div>
       <div className="mb-4 flex flex-col sm:flex-row gap-2">
         <input value={ticker} onChange={e => setTicker(e.target.value)} placeholder="Ticker" className="flex-1 px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:outline-none" />
@@ -161,16 +217,26 @@ function Portfolio({ player, setPlayer }) {
                 <th className="p-2">Ticker</th>
                 <th className="p-2">Shares</th>
                 <th className="p-2">Avg Price</th>
+                <th className="p-2">Cur Price</th>
+                <th className="p-2">Profit</th>
+                <th className="p-2">Action</th>
               </tr>
             </thead>
             <tbody>
-              {player.holdings.map(h => (
-                <tr key={h.ticker} className="odd:bg-gray-900 even:bg-gray-800">
-                  <td className="p-2">{h.ticker}</td>
-                  <td className="p-2">{h.shares}</td>
-                  <td className="p-2">${'{'}h.price.toFixed(2){'}'}</td>
-                </tr>
-              ))}
+              {player.holdings.map(h => {
+                const cur = quotes[h.ticker] || h.price;
+                const prof = (cur - h.price) * h.shares;
+                return (
+                  <tr key={h.ticker} className="odd:bg-gray-900 even:bg-gray-800">
+                    <td className="p-2">{h.ticker}</td>
+                    <td className="p-2">{h.shares}</td>
+                    <td className="p-2">${'{'}h.price.toFixed(2){'}'}</td>
+                    <td className="p-2">${'{'}cur.toFixed(2){'}'}</td>
+                    <td className={`p-2 ${'{'}prof >= 0 ? 'text-emerald-400' : 'text-red-400'{'}'}`}>${'{'}prof.toFixed(2){'}'}</td>
+                    <td className="p-2"><button onClick={() => sell(h.ticker)} className="text-xs bg-red-600 hover:bg-red-500 text-white px-2 py-1 rounded">Sell</button></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -277,9 +343,10 @@ function App() {
   });
 
   const joinGame = () => {
-    const newPlayer = { cash: 10000, holdings: [] };
+    const newPlayer = { cash: 10000, holdings: [], trades: 0 };
     setPlayer(newPlayer);
     localStorage.setItem(PLAYER_KEY, JSON.stringify(newPlayer));
+    if (window.confetti) window.confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
   };
 
   return (
